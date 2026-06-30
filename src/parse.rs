@@ -1,76 +1,101 @@
 use std::fs;
 
-use std::collections::HashSet;
-use std::collections::HashMap;
+use tokenizers::{Tokenizer, TokenizerBuilder};
+use tokenizers::models::bpe::{BPE, BpeTrainerBuilder};
+use tokenizers::normalizers::{strip::Strip, unicode::NFC, utils::Sequence};
+use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+use tokenizers::AddedToken;
 
+use crate::DICTIONARY_SIZE;
+use crate::DATASET_PATH;
+use crate::TOKENIZER_LIB_PATH;
 
-#[derive(Debug, Clone)]
-pub struct ParseData {
-    pub char_to_id: HashMap<char, usize>,
-    pub id_to_char: HashMap<usize, char>,
-    pub tokenized_text: Vec<usize>,
-    pub len: usize,
-}
 
 #[derive(Debug, Clone)]
 pub struct MatrixData {
+    pub tokenizer: Tokenizer,
     pub inputs: Vec<f32>,
     pub targets: Vec<u32>,
+    pub vocab_size: usize,
 }
 
-pub fn compact_matrix_data(matrix_data: &mut MatrixData, data: &ParseData, context_size: usize) {
-    for i in 0..(data.tokenized_text.len() - context_size) {
-        let window = &data.tokenized_text[i..i + context_size];
+pub fn collections_vec_data(
+    context_size: usize,
+) -> anyhow::Result<MatrixData> {
+    let tokenizer = Tokenizer::from_file(TOKENIZER_LIB_PATH)
+        .map_err(anyhow::Error::msg)?;
 
-        for &token in window {
-            for char_id in 0..data.len {
-                if char_id == token {
-                    matrix_data.inputs.push(1.0_f32);
-                } else {
-                    matrix_data.inputs.push(0.0_f32);
-                };
-            };
+    let text = fs::read_to_string(DATASET_PATH)?;
+
+    let encoding = tokenizer.encode(text, true)
+        .map_err(anyhow::Error::msg)?;
+    let token_ids = encoding.get_ids();
+
+    let vocab_size = tokenizer.get_vocab_size(true);
+
+    let mut matrix_data = MatrixData {
+        tokenizer,
+        inputs: Vec::new(),
+        targets: Vec::new(),
+        vocab_size
+    };
+
+    if token_ids.len() <= context_size {
+        return Err(anyhow::anyhow!(
+            "Ошибка: Текст в dataset.txt слишком короткий ({}) для контекста CONTEXT_SIZE ({})! Добавь больше текста.", 
+            token_ids.len(), 
+            context_size
+        ));
+    }
+
+    for i in 0..(token_ids.len() - context_size) {
+        let window = &token_ids[i..i + context_size];
+
+        for &token_id in window {
+            matrix_data.inputs.push(token_id as f32);
         };
 
-        let next_char_id = data.tokenized_text[i + context_size];
-
-        matrix_data.targets.push(next_char_id as u32);
+        let next_token_id = token_ids[i + context_size];
+        matrix_data.targets.push(next_token_id);
     };
+    
+    Ok(matrix_data)
 }
 
-pub fn parse_learning_file() -> Result<ParseData, Box<dyn std::error::Error>> {
-    let text = fs::read_to_string("src/dataset.txt")?;
+pub fn parse_tokenizers() -> anyhow::Result<()> {
+    let mut tokenizer = TokenizerBuilder::new()
+        .with_model(BPE::default())
+        .with_normalizer(Some(Sequence::new(vec![
+            Strip::new(true, true).into(),
+            NFC.into(),
+        ])))
+        .with_pre_tokenizer(Some(ByteLevel::default()))
+        .with_post_processor(Some(ByteLevel::default()))
+        .with_decoder(Some(ByteLevel::default()))
+        .build()
+        .map_err(anyhow::Error::msg)?;
 
-    let mut unique_chars  = HashSet::new();
+    let mut trainer = BpeTrainerBuilder::new()
+        .vocab_size(DICTIONARY_SIZE)
+        .special_tokens(vec![
+            AddedToken::from(String::from(crate::TOK_BOS), true),
+            AddedToken::from(String::from(crate::TOK_PAD), true),
+            AddedToken::from(String::from(crate::TOK_EOS), true),
+            AddedToken::from(String::from(crate::TOK_UNK), true),
+            AddedToken::from(String::from(crate::TOK_USER), true),
+            AddedToken::from(String::from(crate::TOK_ANIMA), true),
+            AddedToken::from(String::from(crate::TOK_END_USER), true),
+            AddedToken::from(String::from(crate::TOK_END_ANIMA), true),
+        ])
+        .build();
 
-    for ch in text.chars() {
-        unique_chars.insert(ch);
-    };
+    tokenizer.train_from_files(&mut trainer, vec![DATASET_PATH.to_string()])
+        .map_err(anyhow::Error::msg)?;
 
-    let mut char_to_id = HashMap::new();
-    let mut id_to_char = HashMap::new();
+    tokenizer.save(TOKENIZER_LIB_PATH, true)
+        .map_err(anyhow::Error::msg)?;
 
-    for (i, ch) in unique_chars.iter().enumerate() {
-        char_to_id.insert(*ch, i);
-        id_to_char.insert(i, *ch);
-    };
+    println!("Токенизатор успешно обучен и сохранен!");
 
-    let mut tokenized_text = Vec::new();
-
-    for ch in text.chars() {
-        let id = char_to_id.get(&ch);
-
-        if let Some(id) = id {
-            tokenized_text.push(*id);
-        };
-    };
-
-    let data = ParseData {
-        char_to_id,
-        id_to_char,
-        tokenized_text,
-        len: unique_chars.len(),
-    };
-
-    Ok(data)
+    Ok(())
 }

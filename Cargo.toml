@@ -4,8 +4,13 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-candle-core = "0.11.0"
-candle-nn = "0.11.0"
+anyhow = "1.0.103"
+candle-core = { git = "https://github.com/huggingface/candle", default-features = false, features = ["cuda"] }
+candle-nn = { git = "https://github.com/huggingface/candle", default-features = false, features = ["cuda"] }
+rand = "0.8.0"
+# serde = { version = "1.0.228", features = ["derive"] }
+# tauri = "2.11.3"
+tokenizers = "0.23.1"
 
 [profile.release]
 opt-level = 3
